@@ -106,7 +106,7 @@ class Imaedge_Gallery_Importer {
                     <tr>
                         <th scope="row"><label for="igi_source">Quelle</label></th>
                         <td>
-                            <textarea name="source" id="igi_source" rows="18" style="width:100%;font-family:monospace;" placeholder="https://www.imaedge.org/i/.../export" required></textarea>
+                            <input name="source" id="igi_source" type="text" class="large-text code" placeholder="https://www.imaedge.org/i/.../export" required>
                         </td>
                     </tr>
                 </table>
