@@ -54,7 +54,7 @@ class Imaedge_Gallery_Importer {
                         <textarea readonly rows="5" style="width:100%;font-family:monospace;"><?php echo esc_textarea($result['block']); ?></textarea>
                     <?php endif; ?>
                     <?php if (!empty($result['post_edit_url'])): ?>
-                        <p><a class="button button-primary" href="<?php echo esc_url($result['post_edit_url']); ?>">Erstellte Galerie-Seite bearbeiten</a></p>
+                        <p><a class="button button-primary" href="<?php echo esc_url($result['post_edit_url']); ?>">Erstellten Galerie-Beitrag bearbeiten</a></p>
                     <?php endif; ?>
                     <?php if (!empty($result['errors'])): ?>
                         <p><strong>Fehler / übersprungene URLs:</strong></p>
@@ -88,9 +88,9 @@ class Imaedge_Gallery_Importer {
                         <td><input name="title" id="igi_title" type="text" class="regular-text" value="Imported Gallery"></td>
                     </tr>
                     <tr>
-                        <th scope="row">Seite erstellen</th>
+                        <th scope="row">Beitrag erstellen</th>
                         <td>
-                            <label><input type="checkbox" name="create_page" value="1" checked> Neue Entwurfs-Seite mit Galerie erstellen</label>
+                            <label><input type="checkbox" name="create_page" value="1" checked> Neuen Entwurfs-Beitrag mit Galerie erstellen</label>
                         </td>
                     </tr>
                     <tr>
@@ -194,7 +194,7 @@ class Imaedge_Gallery_Importer {
                     }
 
                     if (data.post_edit_url) {
-                        html += '<p><a class="button button-primary" href="' + encodeURI(data.post_edit_url) + '">Erstellte Galerie-Seite bearbeiten</a></p>';
+                        html += '<p><a class="button button-primary" href="' + encodeURI(data.post_edit_url) + '">Erstellten Galerie-Beitrag bearbeiten</a></p>';
                     }
 
                     if (errors.length) {
@@ -365,20 +365,20 @@ class Imaedge_Gallery_Importer {
             $block .= '</figure>' . "\n" . '<!-- /wp:gallery -->';
 
             if ($create_page) {
-                $this->append_log($run_id, 'Entwurfs-Seite wird erstellt.');
+                $this->append_log($run_id, 'Entwurfs-Beitrag wird erstellt.');
                 $post_id = wp_insert_post([
                     'post_title' => $title,
                     'post_status' => 'draft',
-                    'post_type' => 'page',
+                    'post_type' => 'post',
                     'post_content' => $block,
                 ], true);
 
                 if (is_wp_error($post_id)) {
-                    $errors[] = 'Seite konnte nicht erstellt werden: ' . $post_id->get_error_message();
-                    $this->append_log($run_id, 'Seite konnte nicht erstellt werden: ' . $post_id->get_error_message());
+                    $errors[] = 'Beitrag konnte nicht erstellt werden: ' . $post_id->get_error_message();
+                    $this->append_log($run_id, 'Beitrag konnte nicht erstellt werden: ' . $post_id->get_error_message());
                 } else {
                     $post_edit_url = get_edit_post_link($post_id, 'raw');
-                    $this->append_log($run_id, 'Entwurfs-Seite erstellt.');
+                    $this->append_log($run_id, 'Entwurfs-Beitrag erstellt.');
                 }
             }
         }
