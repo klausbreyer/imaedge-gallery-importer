@@ -12,7 +12,7 @@ Was es macht:
 - Sucht standardmäßig nach Links wie /original.jpg, /original.jpeg, /original.png, /original.webp.
 - Lädt diese Bilder in die WordPress-Mediathek.
 - Zeigt während des Imports einen Arbeitsindikator mit Live-Log.
-- Erstellt optional eine neue Entwurfs-Seite mit Gutenberg-Galerie.
+- Erstellt optional einen neuen Entwurfs-Beitrag mit Gutenberg-Galerie.
 - Gibt zusätzlich einen [gallery ids="..."] Shortcode aus.
 
 Hinweis:
