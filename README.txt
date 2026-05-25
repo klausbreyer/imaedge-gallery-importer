@@ -4,7 +4,7 @@ Imaedge Gallery Importer
 Installation:
 1. ZIP in WordPress unter Plugins > Installieren > Plugin hochladen installieren.
 2. Plugin aktivieren.
-3. In WordPress zu Werkzeuge > Imaedge Gallery Importer gehen.
+3. In WordPress zu Imaedge Gallery Importer gehen.
 4. Imaedge-Export-Link oder HTML-Source einfügen und importieren.
 
 Was es macht:
