@@ -5,13 +5,14 @@ Installation:
 1. ZIP in WordPress unter Plugins > Installieren > Plugin hochladen installieren.
 2. Plugin aktivieren.
 3. In WordPress zu Werkzeuge > Imaedge Gallery Importer gehen.
-4. HTML-Source einfügen und importieren.
+4. Imaedge-Export-Link oder HTML-Source einfügen und importieren.
 
 Was es macht:
+- Lädt bei Bedarf einen eingefügten Imaedge-Export-Link und durchsucht dessen HTML.
 - Sucht standardmäßig nach Links wie /original.jpg, /original.jpeg, /original.png, /original.webp.
 - Lädt diese Bilder in die WordPress-Mediathek.
 - Erstellt optional eine neue Entwurfs-Seite mit Gutenberg-Galerie.
 - Gibt zusätzlich einen [gallery ids="..."] Shortcode aus.
 
 Hinweis:
-Die externen Bild-URLs müssen vom WordPress-Server erreichbar sein.
+Die Imaedge-Export-URL und die externen Bild-URLs müssen vom WordPress-Server erreichbar sein.
