@@ -22,12 +22,14 @@ class Imaedge_Gallery_Importer {
     }
 
     public function add_admin_page() {
-        add_management_page(
+        add_menu_page(
             'Imaedge Gallery Importer',
             'Imaedge Gallery Importer',
             'upload_files',
             self::MENU_SLUG,
-            [$this, 'render_admin_page']
+            [$this, 'render_admin_page'],
+            'dashicons-format-gallery',
+            56
         );
     }
 
@@ -402,7 +404,7 @@ class Imaedge_Gallery_Importer {
             ]);
         }
 
-        wp_safe_redirect(admin_url('tools.php?page=' . self::MENU_SLUG));
+        wp_safe_redirect(admin_url('admin.php?page=' . self::MENU_SLUG));
         exit;
     }
 
