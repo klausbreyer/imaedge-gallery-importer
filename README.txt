@@ -9,7 +9,7 @@ Installation:
 
 Was es macht:
 - Lädt bei Bedarf einen eingefügten Imaedge-Export-Link und durchsucht dessen HTML.
-- Sucht standardmäßig nach Links wie /original.jpg, /original.jpeg, /original.png, /original.webp.
+- Lädt verlinkte Bilddateien aus <a href="..."> und ignoriert andere Links.
 - Lädt diese Bilder in die WordPress-Mediathek.
 - Zeigt während des Imports einen Arbeitsindikator mit Live-Log.
 - Erstellt optional einen neuen Entwurfs-Beitrag mit Gutenberg-Galerie.

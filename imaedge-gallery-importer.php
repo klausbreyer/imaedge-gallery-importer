@@ -1,9 +1,11 @@
 <?php
 /**
  * Plugin Name: Imaedge Gallery Importer
+ * Plugin URI: https://imaedge.org/
  * Description: Importiert Bilder aus Imaedge-Links oder HTML-Exports in die WordPress-Mediathek und erstellt daraus eine Galerie.
  * Version: 1.0.0
- * Author: OpenAI / ChatGPT
+ * Author: Klaus Breyer
+ * Author URI: https://v01.io/
  * License: GPLv2 or later
  */
 
@@ -18,6 +20,7 @@ class Imaedge_Gallery_Importer {
     public function __construct() {
         add_action('admin_menu', [$this, 'add_admin_page']);
         add_action('admin_post_imaedge_gallery_import', [$this, 'handle_import']);
+        add_action('wp_ajax_imaedge_gallery_import', [$this, 'handle_import']);
         add_action('wp_ajax_imaedge_gallery_import_log', [$this, 'handle_log_request']);
     }
 
@@ -44,7 +47,7 @@ class Imaedge_Gallery_Importer {
         ?>
         <div class="wrap">
             <h1>Imaedge Gallery Importer</h1>
-            <p>Füge einen Imaedge-Export-Link oder HTML-Source ein. Das Plugin sucht bevorzugt nach Links auf <code>/original.jpg</code>, <code>/original.jpeg</code>, <code>/original.png</code> oder <code>/original.webp</code>, lädt diese in die Mediathek und erstellt daraus eine Galerie.</p>
+            <p>Füge einen Imaedge-Export-Link oder HTML-Source ein. Das Plugin lädt alle verlinkten Bilddateien aus <code>&lt;a href="..."&gt;</code> in die Mediathek und erstellt daraus eine Galerie.</p>
 
             <?php if (is_array($result)): ?>
                 <div class="notice notice-<?php echo empty($result['errors']) ? 'success' : 'warning'; ?> is-dismissible">
@@ -93,14 +96,6 @@ class Imaedge_Gallery_Importer {
                         <th scope="row">Beitrag erstellen</th>
                         <td>
                             <label><input type="checkbox" name="create_page" value="1" checked> Neuen Entwurfs-Beitrag mit Galerie erstellen</label>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row">Quelle</th>
-                        <td>
-                            <label><input type="radio" name="source_mode" value="original" checked> Originale aus <code>&lt;a href=".../original..."&gt;</code> importieren</label><br>
-                            <label><input type="radio" name="source_mode" value="images"> Bilder aus <code>&lt;img src="..."&gt;</code> importieren</label><br>
-                            <label><input type="radio" name="source_mode" value="both"> Beides importieren</label>
                         </td>
                     </tr>
                     <tr>
@@ -220,6 +215,48 @@ class Imaedge_Gallery_Importer {
                         .replace(/'/g, '&#039;');
                 }
 
+                function extractResponseMessage(text) {
+                    var cleanText = String(text || '').trim();
+                    var parsed;
+                    var titleText = '';
+                    var bodyText = '';
+
+                    if (!cleanText) {
+                        return '';
+                    }
+
+                    if (cleanText.indexOf('<') !== -1 && window.DOMParser) {
+                        parsed = new DOMParser().parseFromString(cleanText, 'text/html');
+                        titleText = parsed.querySelector('title') ? parsed.querySelector('title').textContent.trim() : '';
+                        bodyText = parsed.body ? parsed.body.textContent.replace(/\s+/g, ' ').trim() : '';
+                        cleanText = titleText || bodyText || cleanText;
+                    }
+
+                    return cleanText.length > 240 ? cleanText.slice(0, 237) + '...' : cleanText;
+                }
+
+                function readJsonResponse(response) {
+                    return response.text().then(function (text) {
+                        var payload;
+
+                        try {
+                            payload = JSON.parse(text);
+                        } catch (error) {
+                            var message = response.ok
+                                ? 'Der Server hat keine gültige JSON-Antwort gesendet.'
+                                : 'Der Server hat mit HTTP-Status ' + response.status + ' geantwortet.';
+                            var details = extractResponseMessage(text);
+                            throw new Error(details ? message + ' ' + details : message);
+                        }
+
+                        if (!response.ok || !payload || !payload.success) {
+                            throw new Error(payload && payload.data && payload.data.message ? payload.data.message : 'Import fehlgeschlagen.');
+                        }
+
+                        return payload;
+                    });
+                }
+
                 form.addEventListener('submit', function (event) {
                     var data = new FormData(form);
                     var runId = data.get('run_id');
@@ -245,9 +282,10 @@ class Imaedge_Gallery_Importer {
                             body: pollData
                         })
                             .then(function (response) {
-                                return response.json();
+                                return response.text();
                             })
-                            .then(function (payload) {
+                            .then(function (text) {
+                                var payload = JSON.parse(text);
                                 if (payload && payload.success && payload.data && payload.data.lines && payload.data.lines.length) {
                                     renderLog(payload.data.lines);
                                 }
@@ -258,19 +296,13 @@ class Imaedge_Gallery_Importer {
                     pollTimer = window.setInterval(pollLog, 800);
                     pollLog();
 
-                    fetch(form.action, {
+                    fetch(logUrl, {
                         method: 'POST',
                         credentials: 'same-origin',
                         body: data
                     })
-                        .then(function (response) {
-                            return response.json();
-                        })
+                        .then(readJsonResponse)
                         .then(function (payload) {
-                            if (!payload || !payload.success) {
-                                throw new Error(payload && payload.data && payload.data.message ? payload.data.message : 'Import fehlgeschlagen.');
-                            }
-
                             window.clearInterval(pollTimer);
                             renderLog(payload.data.log || []);
                             renderResult(payload.data.result || {});
@@ -291,23 +323,42 @@ class Imaedge_Gallery_Importer {
     }
 
     public function handle_import() {
+        $is_ajax = !empty($_POST['ajax_import']);
+
         if (!current_user_can('upload_files')) {
+            if ($is_ajax) {
+                wp_send_json_error(['message' => 'Keine Berechtigung.'], 403);
+            }
+
             wp_die(esc_html__('Du hast keine Berechtigung, Dateien hochzuladen.', 'imaedge-gallery-importer'));
         }
 
-        check_admin_referer(self::NONCE_ACTION);
+        $nonce = isset($_POST['_wpnonce']) ? sanitize_text_field(wp_unslash($_POST['_wpnonce'])) : '';
+        if (!wp_verify_nonce($nonce, self::NONCE_ACTION)) {
+            if ($is_ajax) {
+                wp_send_json_error(['message' => 'Sicherheitsprüfung fehlgeschlagen. Bitte Seite neu laden und erneut versuchen.'], 403);
+            }
 
-        $is_ajax = !empty($_POST['ajax_import']);
+            check_admin_referer(self::NONCE_ACTION);
+        }
+
         $run_id = isset($_POST['run_id']) ? sanitize_key(wp_unslash($_POST['run_id'])) : wp_generate_uuid4();
         $this->reset_log($run_id);
         $this->append_log($run_id, 'Import gestartet.');
+
+        if (function_exists('wp_raise_memory_limit')) {
+            wp_raise_memory_limit('image');
+        }
+
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
 
         $source = isset($_POST['source']) ? trim(wp_unslash($_POST['source'])) : '';
         if ($source === '' && isset($_POST['html'])) {
             $source = trim(wp_unslash($_POST['html']));
         }
         $title = isset($_POST['title']) ? sanitize_text_field(wp_unslash($_POST['title'])) : 'Imported Gallery';
-        $source_mode = isset($_POST['source_mode']) ? sanitize_key($_POST['source_mode']) : 'original';
         $create_page = !empty($_POST['create_page']);
 
         require_once ABSPATH . 'wp-admin/includes/media.php';
@@ -323,7 +374,7 @@ class Imaedge_Gallery_Importer {
             $items = [];
         } else {
             $this->append_log($run_id, 'Quelle geladen. Bild-URLs werden gesucht.');
-            $items = $this->extract_items($source_data['html'], $source_mode, $source_data['base_url']);
+            $items = $this->extract_items($source_data['html'], $source_data['base_url']);
             if (empty($items)) {
                 $errors[] = 'Keine passenden Bild-URLs in der Quelle gefunden.';
                 $this->append_log($run_id, 'Keine passenden Bild-URLs gefunden.');
@@ -470,32 +521,23 @@ class Imaedge_Gallery_Importer {
         ];
     }
 
-    private function extract_items($html, $source_mode, $base_url = '') {
+    private function extract_items($html, $base_url = '') {
         $items = [];
 
-        if ($source_mode === 'original' || $source_mode === 'both') {
-            if (preg_match_all('/<a\b[^>]*href=["\']([^"\']*\/original\.(?:jpe?g|png|webp|gif)(?:\?[^"\']*)?)["\'][^>]*>/i', $html, $matches, PREG_SET_ORDER)) {
-                foreach ($matches as $match) {
-                    $tag = $match[0];
-                    $url = $this->absolute_url(html_entity_decode($match[1], ENT_QUOTES | ENT_HTML5), $base_url);
-                    $filename = $this->attribute_from_tag($tag, 'download');
-                    if (!$filename) {
-                        $filename = basename(parse_url($url, PHP_URL_PATH));
-                    }
-                    $items[] = ['url' => $url, 'filename' => sanitize_file_name($filename)];
+        if (preg_match_all('/<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>/i', $html, $matches, PREG_SET_ORDER)) {
+            foreach ($matches as $match) {
+                $tag = $match[0];
+                $url = $this->absolute_url(html_entity_decode($match[1], ENT_QUOTES | ENT_HTML5), $base_url);
+                if (!$this->looks_like_image_url($url)) {
+                    continue;
                 }
-            }
-        }
 
-        if ($source_mode === 'images' || $source_mode === 'both') {
-            if (preg_match_all('/<img\b[^>]*src=["\']([^"\']+)["\'][^>]*>/i', $html, $matches, PREG_SET_ORDER)) {
-                foreach ($matches as $match) {
-                    $url = $this->absolute_url(html_entity_decode($match[1], ENT_QUOTES | ENT_HTML5), $base_url);
-                    if (!$this->looks_like_image_url($url)) {
-                        continue;
-                    }
-                    $items[] = ['url' => $url, 'filename' => basename(parse_url($url, PHP_URL_PATH))];
+                $filename = $this->attribute_from_tag($tag, 'download');
+                if (!$filename || !$this->looks_like_image_url($filename)) {
+                    $filename = basename(parse_url($url, PHP_URL_PATH));
                 }
+
+                $items[] = ['url' => $url, 'filename' => sanitize_file_name($filename)];
             }
         }
 
