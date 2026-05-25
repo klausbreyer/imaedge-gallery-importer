@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: Imaedge Gallery Importer
- * Description: Importiert Bilder aus HTML-Exports in die WordPress-Mediathek und erstellt daraus eine Galerie.
+ * Description: Importiert Bilder aus Imaedge-Links oder HTML-Exports in die WordPress-Mediathek und erstellt daraus eine Galerie.
  * Version: 1.0.0
  * Author: OpenAI / ChatGPT
  * License: GPLv2 or later
@@ -40,7 +40,7 @@ class Imaedge_Gallery_Importer {
         ?>
         <div class="wrap">
             <h1>Imaedge Gallery Importer</h1>
-            <p>Füge den HTML-Source ein. Das Plugin sucht bevorzugt nach Links auf <code>/original.jpg</code>, <code>/original.jpeg</code>, <code>/original.png</code> oder <code>/original.webp</code>, lädt diese in die Mediathek und erstellt daraus eine Galerie.</p>
+            <p>Füge einen Imaedge-Export-Link oder HTML-Source ein. Das Plugin sucht bevorzugt nach Links auf <code>/original.jpg</code>, <code>/original.jpeg</code>, <code>/original.png</code> oder <code>/original.webp</code>, lädt diese in die Mediathek und erstellt daraus eine Galerie.</p>
 
             <?php if (is_array($result)): ?>
                 <div class="notice notice-<?php echo empty($result['errors']) ? 'success' : 'warning'; ?> is-dismissible">
@@ -89,9 +89,9 @@ class Imaedge_Gallery_Importer {
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row"><label for="igi_html">HTML</label></th>
+                        <th scope="row"><label for="igi_source">Quelle</label></th>
                         <td>
-                            <textarea name="html" id="igi_html" rows="18" style="width:100%;font-family:monospace;" required></textarea>
+                            <textarea name="source" id="igi_source" rows="18" style="width:100%;font-family:monospace;" placeholder="https://www.imaedge.org/i/.../export" required></textarea>
                         </td>
                     </tr>
                 </table>
@@ -109,7 +109,10 @@ class Imaedge_Gallery_Importer {
 
         check_admin_referer(self::NONCE_ACTION);
 
-        $html = isset($_POST['html']) ? wp_unslash($_POST['html']) : '';
+        $source = isset($_POST['source']) ? trim(wp_unslash($_POST['source'])) : '';
+        if ($source === '' && isset($_POST['html'])) {
+            $source = trim(wp_unslash($_POST['html']));
+        }
         $title = isset($_POST['title']) ? sanitize_text_field(wp_unslash($_POST['title'])) : 'Imported Gallery';
         $source_mode = isset($_POST['source_mode']) ? sanitize_key($_POST['source_mode']) : 'original';
         $create_page = !empty($_POST['create_page']);
@@ -118,9 +121,19 @@ class Imaedge_Gallery_Importer {
         require_once ABSPATH . 'wp-admin/includes/file.php';
         require_once ABSPATH . 'wp-admin/includes/image.php';
 
-        $items = $this->extract_items($html, $source_mode);
-        $ids = [];
         $errors = [];
+        $source_data = $this->load_source($source);
+        if (is_wp_error($source_data)) {
+            $errors[] = $source_data->get_error_message();
+            $items = [];
+        } else {
+            $items = $this->extract_items($source_data['html'], $source_mode, $source_data['base_url']);
+            if (empty($items)) {
+                $errors[] = 'Keine passenden Bild-URLs in der Quelle gefunden.';
+            }
+        }
+
+        $ids = [];
 
         foreach ($items as $item) {
             $attachment_id = $this->import_remote_file($item['url'], $item['filename'], $title);
@@ -177,14 +190,58 @@ class Imaedge_Gallery_Importer {
         exit;
     }
 
-    private function extract_items($html, $source_mode) {
+    private function load_source($source) {
+        if ($source === '') {
+            return new WP_Error('empty_source', 'Bitte einen Imaedge-Export-Link oder HTML-Source einfügen.');
+        }
+
+        if ($this->is_probably_url($source)) {
+            if ($this->looks_like_image_url($source)) {
+                return [
+                    'html' => $source,
+                    'base_url' => $source,
+                ];
+            }
+
+            if (!wp_http_validate_url($source)) {
+                return new WP_Error('invalid_source_url', 'Ungültige oder nicht erlaubte Quell-URL.');
+            }
+
+            $response = wp_remote_get($source, [
+                'timeout' => 30,
+                'redirection' => 5,
+                'user-agent' => 'Imaedge Gallery Importer/' . get_bloginfo('version') . '; ' . home_url('/'),
+            ]);
+
+            if (is_wp_error($response)) {
+                return new WP_Error('source_fetch_failed', 'Quell-URL konnte nicht geladen werden: ' . $response->get_error_message());
+            }
+
+            $status_code = wp_remote_retrieve_response_code($response);
+            if ($status_code < 200 || $status_code >= 300) {
+                return new WP_Error('source_bad_status', 'Quell-URL konnte nicht geladen werden. HTTP-Status: ' . intval($status_code));
+            }
+
+            return [
+                'html' => wp_remote_retrieve_body($response),
+                'base_url' => $source,
+            ];
+        }
+
+        return [
+            'html' => $source,
+            'base_url' => '',
+        ];
+    }
+
+    private function extract_items($html, $source_mode, $base_url = '') {
         $items = [];
 
         if ($source_mode === 'original' || $source_mode === 'both') {
-            if (preg_match_all('/<a\b[^>]*href=["\']([^"\']*\/original\.(?:jpe?g|png|webp|gif))(?:\?[^"\']*)?["\'][^>]*>/i', $html, $matches, PREG_SET_ORDER)) {
+            if (preg_match_all('/<a\b[^>]*href=["\']([^"\']*\/original\.(?:jpe?g|png|webp|gif)(?:\?[^"\']*)?)["\'][^>]*>/i', $html, $matches, PREG_SET_ORDER)) {
                 foreach ($matches as $match) {
                     $tag = $match[0];
-                    $url = html_entity_decode($match[1], ENT_QUOTES | ENT_HTML5);
+                    $url = $this->absolute_url(html_entity_decode($match[1], ENT_QUOTES | ENT_HTML5), $base_url);
                     $filename = $this->attribute_from_tag($tag, 'download');
                     if (!$filename) {
                         $filename = basename(parse_url($url, PHP_URL_PATH));
@@ -197,13 +254,20 @@ class Imaedge_Gallery_Importer {
         if ($source_mode === 'images' || $source_mode === 'both') {
             if (preg_match_all('/<img\b[^>]*src=["\']([^"\']+)["\'][^>]*>/i', $html, $matches, PREG_SET_ORDER)) {
                 foreach ($matches as $match) {
-                    $url = html_entity_decode($match[1], ENT_QUOTES | ENT_HTML5);
+                    $url = $this->absolute_url(html_entity_decode($match[1], ENT_QUOTES | ENT_HTML5), $base_url);
                     if (!$this->looks_like_image_url($url)) {
                         continue;
                     }
                     $items[] = ['url' => $url, 'filename' => basename(parse_url($url, PHP_URL_PATH))];
                 }
             }
+        }
+
+        if (empty($items) && $this->looks_like_image_url($html)) {
+            $items[] = [
+                'url' => $this->absolute_url(trim($html), $base_url),
+                'filename' => basename(parse_url(trim($html), PHP_URL_PATH)),
+            ];
         }
 
         $seen = [];
@@ -229,6 +293,60 @@ class Imaedge_Gallery_Importer {
     private function looks_like_image_url($url) {
         $path = parse_url($url, PHP_URL_PATH);
         return is_string($path) && preg_match('/\.(jpe?g|png|webp|gif)$/i', $path);
+    }
+
+    private function is_probably_url($value) {
+        return is_string($value) && preg_match('/^https?:\/\/[^\s<>"\']+$/i', trim($value));
+    }
+
+    private function absolute_url($url, $base_url = '') {
+        $url = trim($url);
+        if ($url === '' || preg_match('/^[a-z][a-z0-9+.-]*:/i', $url)) {
+            return $url;
+        }
+
+        if (strpos($url, '//') === 0) {
+            $scheme = parse_url($base_url, PHP_URL_SCHEME);
+            return ($scheme ?: 'https') . ':' . $url;
+        }
+
+        if (!$base_url || !preg_match('/^https?:\/\//i', $base_url)) {
+            return $url;
+        }
+
+        $base = wp_parse_url($base_url);
+        if (empty($base['scheme']) || empty($base['host'])) {
+            return $url;
+        }
+
+        $host = $base['scheme'] . '://' . $base['host'] . (isset($base['port']) ? ':' . $base['port'] : '');
+        if (strpos($url, '/') === 0) {
+            return $host . $this->normalize_path($url);
+        }
+
+        $base_path = isset($base['path']) ? $base['path'] : '/';
+        $dir = preg_replace('/\/[^\/]*$/', '/', $base_path);
+        return $host . $this->normalize_path($dir . $url);
+    }
+
+    private function normalize_path($path) {
+        $segments = explode('/', $path);
+        $normalized = [];
+
+        foreach ($segments as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+
+            if ($segment === '..') {
+                array_pop($normalized);
+                continue;
+            }
+
+            $normalized[] = $segment;
+        }
+
+        return '/' . implode('/', $normalized);
     }
 
     private function import_remote_file($url, $filename, $title) {
