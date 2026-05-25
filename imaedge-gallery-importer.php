@@ -18,6 +18,7 @@ class Imaedge_Gallery_Importer {
     public function __construct() {
         add_action('admin_menu', [$this, 'add_admin_page']);
         add_action('admin_post_imaedge_gallery_import', [$this, 'handle_import']);
+        add_action('wp_ajax_imaedge_gallery_import_log', [$this, 'handle_log_request']);
     }
 
     public function add_admin_page() {
@@ -37,6 +38,7 @@ class Imaedge_Gallery_Importer {
 
         $result = get_transient('imaedge_gallery_import_result_' . get_current_user_id());
         delete_transient('imaedge_gallery_import_result_' . get_current_user_id());
+        $run_id = wp_generate_uuid4();
         ?>
         <div class="wrap">
             <h1>Imaedge Gallery Importer</h1>
@@ -65,9 +67,20 @@ class Imaedge_Gallery_Importer {
                 </div>
             <?php endif; ?>
 
-            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+            <div id="igi_progress" class="igi-progress" hidden>
+                <p class="igi-progress__status">
+                    <span class="spinner is-active"></span>
+                    <strong id="igi_progress_title">Import läuft...</strong>
+                </p>
+                <div id="igi_live_log" class="igi-live-log" aria-live="polite"></div>
+            </div>
+
+            <div id="igi_ajax_result"></div>
+
+            <form id="igi_import_form" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <?php wp_nonce_field(self::NONCE_ACTION); ?>
                 <input type="hidden" name="action" value="imaedge_gallery_import">
+                <input type="hidden" name="run_id" value="<?php echo esc_attr($run_id); ?>">
 
                 <table class="form-table" role="presentation">
                     <tr>
@@ -99,6 +112,179 @@ class Imaedge_Gallery_Importer {
                 <?php submit_button('Bilder importieren und Galerie erstellen'); ?>
             </form>
         </div>
+        <style>
+            .igi-progress {
+                background: #fff;
+                border: 1px solid #c3c4c7;
+                margin: 20px 0;
+                padding: 16px;
+            }
+
+            .igi-progress__status {
+                align-items: center;
+                display: flex;
+                gap: 8px;
+                margin: 0 0 12px;
+            }
+
+            .igi-progress__status .spinner {
+                float: none;
+                margin: 0;
+                visibility: visible;
+            }
+
+            .igi-live-log {
+                background: #1d2327;
+                color: #f0f0f1;
+                font-family: Consolas, Monaco, monospace;
+                font-size: 13px;
+                line-height: 1.5;
+                max-height: 280px;
+                overflow: auto;
+                padding: 12px;
+                white-space: pre-wrap;
+            }
+
+            .igi-live-log__line {
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                padding: 2px 0;
+            }
+        </style>
+        <script>
+            (function () {
+                var form = document.getElementById('igi_import_form');
+                var progress = document.getElementById('igi_progress');
+                var log = document.getElementById('igi_live_log');
+                var title = document.getElementById('igi_progress_title');
+                var result = document.getElementById('igi_ajax_result');
+                var logUrl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
+
+                if (!form || !window.fetch || !window.FormData) {
+                    return;
+                }
+
+                function setControlsDisabled(disabled) {
+                    Array.prototype.forEach.call(form.elements, function (field) {
+                        field.disabled = disabled;
+                    });
+                }
+
+                function renderLog(lines) {
+                    log.textContent = '';
+                    lines.forEach(function (line) {
+                        var row = document.createElement('div');
+                        row.className = 'igi-live-log__line';
+                        row.textContent = line;
+                        log.appendChild(row);
+                    });
+                    log.scrollTop = log.scrollHeight;
+                }
+
+                function renderResult(data) {
+                    var errors = data.errors || [];
+                    var noticeClass = errors.length ? 'notice-warning' : 'notice-success';
+                    var html = '<div class="notice ' + noticeClass + ' is-dismissible">';
+                    html += '<p><strong>' + Number(data.imported || 0) + '</strong> Bilder importiert.</p>';
+
+                    if (data.shortcode) {
+                        html += '<p><strong>Gallery Shortcode:</strong></p>';
+                        html += '<textarea readonly rows="2" style="width:100%;font-family:monospace;">' + escapeHtml(data.shortcode) + '</textarea>';
+                        html += '<p><strong>Gutenberg Gallery Block:</strong></p>';
+                        html += '<textarea readonly rows="5" style="width:100%;font-family:monospace;">' + escapeHtml(data.block || '') + '</textarea>';
+                    }
+
+                    if (data.post_edit_url) {
+                        html += '<p><a class="button button-primary" href="' + encodeURI(data.post_edit_url) + '">Erstellte Galerie-Seite bearbeiten</a></p>';
+                    }
+
+                    if (errors.length) {
+                        html += '<p><strong>Fehler / übersprungene URLs:</strong></p><ul style="list-style:disc;margin-left:20px;">';
+                        errors.forEach(function (error) {
+                            html += '<li><code>' + escapeHtml(error) + '</code></li>';
+                        });
+                        html += '</ul>';
+                    }
+
+                    html += '</div>';
+                    result.innerHTML = html;
+                }
+
+                function escapeHtml(value) {
+                    return String(value)
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/"/g, '&quot;')
+                        .replace(/'/g, '&#039;');
+                }
+
+                form.addEventListener('submit', function (event) {
+                    var data = new FormData(form);
+                    var runId = data.get('run_id');
+                    var pollTimer;
+
+                    event.preventDefault();
+                    data.set('ajax_import', '1');
+                    progress.hidden = false;
+                    result.innerHTML = '';
+                    title.textContent = 'Import läuft...';
+                    renderLog(['Import gestartet.']);
+                    setControlsDisabled(true);
+
+                    function pollLog() {
+                        var pollData = new FormData();
+                        pollData.set('action', 'imaedge_gallery_import_log');
+                        pollData.set('_wpnonce', data.get('_wpnonce'));
+                        pollData.set('run_id', runId);
+
+                        fetch(logUrl, {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            body: pollData
+                        })
+                            .then(function (response) {
+                                return response.json();
+                            })
+                            .then(function (payload) {
+                                if (payload && payload.success && payload.data && payload.data.lines && payload.data.lines.length) {
+                                    renderLog(payload.data.lines);
+                                }
+                            })
+                            .catch(function () {});
+                    }
+
+                    pollTimer = window.setInterval(pollLog, 800);
+                    pollLog();
+
+                    fetch(form.action, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        body: data
+                    })
+                        .then(function (response) {
+                            return response.json();
+                        })
+                        .then(function (payload) {
+                            if (!payload || !payload.success) {
+                                throw new Error(payload && payload.data && payload.data.message ? payload.data.message : 'Import fehlgeschlagen.');
+                            }
+
+                            window.clearInterval(pollTimer);
+                            renderLog(payload.data.log || []);
+                            renderResult(payload.data.result || {});
+                            title.textContent = 'Import abgeschlossen.';
+                        })
+                        .catch(function (error) {
+                            window.clearInterval(pollTimer);
+                            title.textContent = 'Import fehlgeschlagen.';
+                            renderLog([error.message || 'Import fehlgeschlagen.']);
+                        })
+                        .finally(function () {
+                            setControlsDisabled(false);
+                        });
+                });
+            })();
+        </script>
         <?php
     }
 
@@ -108,6 +294,11 @@ class Imaedge_Gallery_Importer {
         }
 
         check_admin_referer(self::NONCE_ACTION);
+
+        $is_ajax = !empty($_POST['ajax_import']);
+        $run_id = isset($_POST['run_id']) ? sanitize_key(wp_unslash($_POST['run_id'])) : wp_generate_uuid4();
+        $this->reset_log($run_id);
+        $this->append_log($run_id, 'Import gestartet.');
 
         $source = isset($_POST['source']) ? trim(wp_unslash($_POST['source'])) : '';
         if ($source === '' && isset($_POST['html'])) {
@@ -122,26 +313,36 @@ class Imaedge_Gallery_Importer {
         require_once ABSPATH . 'wp-admin/includes/image.php';
 
         $errors = [];
-        $source_data = $this->load_source($source);
+        $this->append_log($run_id, 'Quelle wird geprüft.');
+        $source_data = $this->load_source($source, $run_id);
         if (is_wp_error($source_data)) {
             $errors[] = $source_data->get_error_message();
+            $this->append_log($run_id, 'Quelle konnte nicht geladen werden: ' . $source_data->get_error_message());
             $items = [];
         } else {
+            $this->append_log($run_id, 'Quelle geladen. Bild-URLs werden gesucht.');
             $items = $this->extract_items($source_data['html'], $source_mode, $source_data['base_url']);
             if (empty($items)) {
                 $errors[] = 'Keine passenden Bild-URLs in der Quelle gefunden.';
+                $this->append_log($run_id, 'Keine passenden Bild-URLs gefunden.');
+            } else {
+                $this->append_log($run_id, count($items) . ' Bild-URLs gefunden.');
             }
         }
 
         $ids = [];
+        $total = count($items);
 
-        foreach ($items as $item) {
+        foreach ($items as $index => $item) {
+            $this->append_log($run_id, 'Importiere Bild ' . ($index + 1) . ' von ' . $total . ': ' . $item['url']);
             $attachment_id = $this->import_remote_file($item['url'], $item['filename'], $title);
             if (is_wp_error($attachment_id)) {
                 $errors[] = $item['url'] . ' - ' . $attachment_id->get_error_message();
+                $this->append_log($run_id, 'Übersprungen: ' . $attachment_id->get_error_message());
                 continue;
             }
             $ids[] = $attachment_id;
+            $this->append_log($run_id, 'Importiert als Attachment #' . intval($attachment_id) . '.');
         }
 
         $ids = array_values(array_unique(array_map('intval', $ids)));
@@ -150,6 +351,7 @@ class Imaedge_Gallery_Importer {
         $post_edit_url = '';
 
         if (!empty($ids)) {
+            $this->append_log($run_id, 'Galerie wird vorbereitet.');
             $shortcode = '[gallery ids="' . implode(',', $ids) . '"]';
             $block = '<!-- wp:gallery {"ids":[' . implode(',', $ids) . '],"linkTo":"media"} -->' . "\n";
             $block .= '<figure class="wp-block-gallery has-nested-images columns-default is-cropped">';
@@ -163,6 +365,7 @@ class Imaedge_Gallery_Importer {
             $block .= '</figure>' . "\n" . '<!-- /wp:gallery -->';
 
             if ($create_page) {
+                $this->append_log($run_id, 'Entwurfs-Seite wird erstellt.');
                 $post_id = wp_insert_post([
                     'post_title' => $title,
                     'post_status' => 'draft',
@@ -172,31 +375,58 @@ class Imaedge_Gallery_Importer {
 
                 if (is_wp_error($post_id)) {
                     $errors[] = 'Seite konnte nicht erstellt werden: ' . $post_id->get_error_message();
+                    $this->append_log($run_id, 'Seite konnte nicht erstellt werden: ' . $post_id->get_error_message());
                 } else {
                     $post_edit_url = get_edit_post_link($post_id, 'raw');
+                    $this->append_log($run_id, 'Entwurfs-Seite erstellt.');
                 }
             }
         }
 
-        set_transient('imaedge_gallery_import_result_' . get_current_user_id(), [
+        $result = [
             'imported' => count($ids),
             'shortcode' => $shortcode,
             'block' => $block,
             'post_edit_url' => $post_edit_url,
             'errors' => $errors,
-        ], 60);
+        ];
+
+        $this->append_log($run_id, 'Fertig. ' . count($ids) . ' Bilder importiert.');
+
+        set_transient('imaedge_gallery_import_result_' . get_current_user_id(), $result, 60);
+
+        if ($is_ajax) {
+            wp_send_json_success([
+                'result' => $result,
+                'log' => $this->get_log($run_id),
+            ]);
+        }
 
         wp_safe_redirect(admin_url('tools.php?page=' . self::MENU_SLUG));
         exit;
     }
 
-    private function load_source($source) {
+    public function handle_log_request() {
+        if (!current_user_can('upload_files')) {
+            wp_send_json_error(['message' => 'Keine Berechtigung.'], 403);
+        }
+
+        check_ajax_referer(self::NONCE_ACTION);
+
+        $run_id = isset($_POST['run_id']) ? sanitize_key(wp_unslash($_POST['run_id'])) : '';
+        wp_send_json_success([
+            'lines' => $this->get_log($run_id),
+        ]);
+    }
+
+    private function load_source($source, $run_id = '') {
         if ($source === '') {
             return new WP_Error('empty_source', 'Bitte einen Imaedge-Export-Link oder HTML-Source einfügen.');
         }
 
         if ($this->is_probably_url($source)) {
             if ($this->looks_like_image_url($source)) {
+                $this->append_log($run_id, 'Direkte Bild-URL erkannt.');
                 return [
                     'html' => $source,
                     'base_url' => $source,
@@ -207,6 +437,7 @@ class Imaedge_Gallery_Importer {
                 return new WP_Error('invalid_source_url', 'Ungültige oder nicht erlaubte Quell-URL.');
             }
 
+            $this->append_log($run_id, 'Quell-URL wird geladen: ' . $source);
             $response = wp_remote_get($source, [
                 'timeout' => 30,
                 'redirection' => 5,
@@ -218,6 +449,7 @@ class Imaedge_Gallery_Importer {
             }
 
             $status_code = wp_remote_retrieve_response_code($response);
+            $this->append_log($run_id, 'Quell-URL antwortet mit HTTP-Status ' . intval($status_code) . '.');
             if ($status_code < 200 || $status_code >= 300) {
                 return new WP_Error('source_bad_status', 'Quell-URL konnte nicht geladen werden. HTTP-Status: ' . intval($status_code));
             }
@@ -227,6 +459,8 @@ class Imaedge_Gallery_Importer {
                 'base_url' => $source,
             ];
         }
+
+        $this->append_log($run_id, 'HTML-Source erkannt.');
 
         return [
             'html' => $source,
@@ -377,6 +611,29 @@ class Imaedge_Gallery_Importer {
         }
 
         return $attachment_id;
+    }
+
+    private function log_key($run_id) {
+        return 'imaedge_gallery_import_log_' . get_current_user_id() . '_' . sanitize_key($run_id);
+    }
+
+    private function reset_log($run_id) {
+        set_transient($this->log_key($run_id), [], 10 * MINUTE_IN_SECONDS);
+    }
+
+    private function append_log($run_id, $message) {
+        $lines = $this->get_log($run_id);
+        $lines[] = '[' . current_time('H:i:s') . '] ' . $message;
+        set_transient($this->log_key($run_id), array_slice($lines, -200), 10 * MINUTE_IN_SECONDS);
+    }
+
+    private function get_log($run_id) {
+        if (!$run_id) {
+            return [];
+        }
+
+        $lines = get_transient($this->log_key($run_id));
+        return is_array($lines) ? $lines : [];
     }
 }
 
